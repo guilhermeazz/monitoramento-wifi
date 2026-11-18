@@ -1,0 +1,95 @@
+/* Estilos customizados para o Painel Tático Wi-Fi CSI Spatial Radar */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #070b14;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Estilização limpa para o Markdown renderizado da camada LLM */
+#llm-output-container h1 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #38bdf8;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 0.25rem;
+}
+
+#llm-output-container h2 {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #34d399;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+#llm-output-container h3 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #22d3ee;
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+#llm-output-container ul,
+#llm-output-container ol {
+  padding-left: 1.1rem;
+  margin-top: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+#llm-output-container li {
+  list-style-type: disc;
+  margin-bottom: 0.2rem;
+}
+
+#llm-output-container code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background-color: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  padding: 0.08rem 0.3rem;
+  border-radius: 0.25rem;
+  color: #67e8f9;
+  font-size: 0.72rem;
+}
+
+#llm-output-container blockquote {
+  border-left: 3px solid #06b6d4;
+  padding-left: 0.6rem;
+  color: #94a3b8;
+  margin: 0.4rem 0;
+  font-size: 0.72rem;
+}
+
+#llm-output-container table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+  font-size: 0.7rem;
+}
+
+#llm-output-container th,
+#llm-output-container td {
+  border: 1px solid #1e293b;
+  padding: 0.3rem 0.4rem;
+  text-align: left;
+}
+
+#llm-output-container th {
+  background-color: #0f172a;
+  color: #38bdf8;
+  font-weight: 600;
+}

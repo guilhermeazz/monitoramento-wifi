@@ -1,0 +1,5 @@
+"-specs=C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build/bootloader/specs/picolibc.specs"
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero

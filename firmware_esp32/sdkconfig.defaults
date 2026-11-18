@@ -1,0 +1,3 @@
+# Configurações padrão automáticas para ESP32 e ESP32-S3 (ESP-IDF v5.x)
+CONFIG_ESP_WIFI_CSI_ENABLED=y
+CONFIG_FREERTOS_HZ=1000

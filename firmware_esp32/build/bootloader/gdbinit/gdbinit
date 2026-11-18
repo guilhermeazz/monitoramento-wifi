@@ -1,0 +1,2 @@
+source C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build/bootloader/gdbinit/symbols
+source C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build/bootloader/gdbinit/connect
