@@ -39,9 +39,9 @@ class Settings:
     DEFAULT_SENSITIVITY: str = os.getenv("COUNTING_SENSITIVITY", "normal")  # "low" | "normal" | "high"
     COUNT_HYSTERESIS_SEC: float = 2.0
 
-    # Estado Inicial e Timeout de Sensores
-    INITIAL_MODE: str = os.getenv("INITIAL_MODE", "hardware")  # "simulation" | "hardware"
-    INITIAL_SIM_PEOPLE: int = int(os.getenv("INITIAL_SIM_PEOPLE", "0"))
+    # Estado Inicial e Timeout de Sensores (Padrão no Modo Simulação com 2 Pessoas)
+    INITIAL_MODE: str = os.getenv("INITIAL_MODE", "simulation")  # "simulation" | "hardware"
+    INITIAL_SIM_PEOPLE: int = int(os.getenv("INITIAL_SIM_PEOPLE", "2"))
     INITIAL_SIM_NODES: int = int(os.getenv("INITIAL_SIM_NODES", "3"))
     NODE_ONLINE_TIMEOUT_SEC: float = 3.0
 

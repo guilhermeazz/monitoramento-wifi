@@ -265,20 +265,25 @@ class SpatialTracker:
         if raw_count >= self._hysteresis_count and raw_count > 0:
             if raw_count > self._hysteresis_count:
                 # Requer persistência de pelo menos 0.15s para subir a contagem (filtra ruído transiente de 1 único frame)
-                if self._pending_up_count != raw_count:
+                if self._pending_up_since <= 0.0:
                     self._pending_up_count = raw_count
                     self._pending_up_since = now
                 elif (now - self._pending_up_since) >= 0.15:
                     self._hysteresis_count = raw_count
                     self._hysteresis_hold_until = now + settings.COUNT_HYSTERESIS_SEC
+                    self._pending_up_since = 0.0
+                else:
+                    self._pending_up_count = raw_count
             else:
                 # Mantém e renova o timer de histerese
                 self._hysteresis_hold_until = now + settings.COUNT_HYSTERESIS_SEC
                 self._pending_up_count = raw_count
+                self._pending_up_since = 0.0
         else:
             # raw_count < self._hysteresis_count: segura pelo tempo de histerese
             if now >= self._hysteresis_hold_until:
                 self._hysteresis_count = raw_count
+                self._pending_up_since = 0.0
                 if raw_count > 0:
                     self._hysteresis_hold_until = now + settings.COUNT_HYSTERESIS_SEC * 0.6
 
@@ -465,19 +470,9 @@ class SpatialTracker:
         any_retained = any(m.stationary_retention_active for _, m in active_rx_pairs)
         max_pert = max([m.perturbation_score for _, m in active_rx_pairs] or [0.0])
 
-        if global_decision.decision_people_count == 0 and not any_retained:
-            self.force_reset_tracks()
-            self.heatmap_ema *= 0.30
-            self.dynamic_map_ema *= 0.30
-            self.tracks.clear()
-            self._hysteresis_count = 0
-            grid_list = [[round(float(np.clip(val, 0.0, 1.0)), 3) for val in row] for row in self.heatmap_ema]
-            return grid_list, [], "Zona de Abrangência Livre", topology_info, coverage_info, global_decision
-
         stable_count = self._apply_count_hysteresis(global_decision.decision_people_count, max_pert, now)
 
         if stable_count == 0 and not any_retained:
-            self.force_reset_tracks()
             self.heatmap_ema *= 0.30
             self.dynamic_map_ema *= 0.30
             self.tracks.clear()

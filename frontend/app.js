@@ -1357,7 +1357,10 @@
     });
   }
 
-  btnModeSim.addEventListener('click', () => setSystemMode({ mode: 'simulation' }));
+  btnModeSim.addEventListener('click', () => {
+    const people = liveState && liveState.simulated_people > 0 ? liveState.simulated_people : 2;
+    setSystemMode({ mode: 'simulation', simulatedPeople: people });
+  });
   btnModeHw.addEventListener('click', () => setSystemMode({ mode: 'hardware' }));
 
   simNodesBtns.forEach((btn) => {
