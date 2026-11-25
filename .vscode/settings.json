@@ -1,3 +1,13 @@
 {
-    "cmake.sourceDirectory": "C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32"
+  "cmake.sourceDirectory": "C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32",
+  "C_Cpp.default.compileCommands": "C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build/compile_commands.json",
+  "C_Cpp.default.compilerPath": "C:/Users/guial/.espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc.exe",
+  "C_Cpp.default.includePath": [
+    "C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/main/**",
+    "C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build/config",
+    "C:/esp/v6.1/esp-idf/components/**"
+  ],
+  "clangd.arguments": [
+    "--compile-commands-dir=C:/Projetos/monitoramento1.0/wifi-spatial-mvp/firmware_esp32/build"
+  ]
 }

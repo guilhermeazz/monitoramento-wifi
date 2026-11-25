@@ -1,0 +1,28 @@
+# Build artifacts do ESP-IDF (ESP32-S3)
+firmware_esp32/build/
+firmware_esp32/sdkconfig
+firmware_esp32/sdkconfig.old
+**/build/
+
+# Python cache e ambientes virtuais
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+dist/
+
+# Variáveis de ambiente, perfil local de sala e logs locais
+.env
+.env.local
+*.log
+backend/room_config.json

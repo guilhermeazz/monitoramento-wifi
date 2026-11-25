@@ -1,0 +1,34 @@
+menu "Wi-Fi CSI Spatial Sensing Configuration"
+
+    config CSI_NODE_ID
+        int "ID Numerico do No ESP32-S3 (1 a 8)"
+        range 1 8
+        default 1
+        help
+            Identificador único do nó sensor (1 = esp_1, 2 = esp_2, 3 = esp_3).
+
+    config CSI_WIFI_SSID
+        string "SSID do Roteador Cisco Linksys E1200 (2.4 GHz)"
+        default "CSI_RADAR_2G"
+
+    config CSI_WIFI_PASSWORD
+        string "Senha WPA2-AES do Roteador Wi-Fi"
+        default "prjmonitoramento2026"
+
+    config CSI_SERVER_IP
+        string "IPv4 do Servidor Backend (Conectado via Cabo LAN)"
+        default "192.168.1.140"
+
+    config CSI_SERVER_PORT
+        int "Porta UDP do Servidor Backend"
+        range 1024 65535 
+        default 5555
+
+    config CSI_TRAFFIC_HZ
+        int "Taxa de Tráfego Ativo de Sondagem CSI (Hz)"
+        range 50 100
+        default 60
+        help
+            Frequência de pacotes UDP leves enviados ao gateway para estimular callbacks CSI contínuos.
+
+endmenu

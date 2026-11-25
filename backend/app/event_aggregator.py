@@ -1,234 +1,173 @@
-import time
 from collections import deque
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+import time
+from typing import Callable, Dict, List, Optional
 
 from .config import settings
-from .models import (
-    AggregatedEvent,
-    CoverageZoneInfo,
-    NodeStatus,
-    PersonCoordinate,
-    RoomConfig,
-    TopologyInfo,
-)
+from .models import AggregatedEvent, OccupancyState
 
 
 class EventAggregator:
     """
-    Agregador Semântico Temporal.
-    Converte coordenadas e estados de 100ms em eventos semânticos de alto nível
-    a cada 5 segundos (ou em mudanças relevantes de ocupação/zona), evitando o envio
-    de vetores CSI brutos para a camada de LLM.
+    Agregador Semântico de Transições de Estado e Ocupação com Debounce (15–30 s).
+    Mantém estatísticas completas da sessão (permanência por zona, pico de pessoas,
+    histórico de eventos e transições) para alimentar a camada de Análise Contextual da LLM.
     """
 
-    def __init__(self, max_history: int = settings.MAX_EVENT_HISTORY):
-        self.history: deque[AggregatedEvent] = deque(maxlen=max_history)
-        self._last_record_time: float = 0.0
-        self._last_people_count: int = -1
-        self._last_active_zones: tuple = ()
-        self._last_tick_time: float = time.time()
-
-        self.session_start_time: str = datetime.now().strftime("%H:%M:%S")
-        self.zone_dwell_seconds: Dict[str, float] = {}
-        self.zone_motion_seconds: Dict[str, float] = {}
-        self.node_perturbation_acc: Dict[str, List[float]] = {}
-        self.peak_occupancy: int = 0
-        self.total_zone_transitions: int = 0
-
-    def ingest_state(
+    def __init__(
         self,
-        people: List[PersonCoordinate],
-        nodes_status: Dict[str, NodeStatus],
+        max_history: int = settings.MAX_EVENT_HISTORY,
+        debounce_sec: float = settings.EVENT_DEBOUNCE_SEC,
+        on_transition_callback: Optional[Callable[[AggregatedEvent], None]] = None,
+    ):
+        self.history: deque[AggregatedEvent] = deque(maxlen=max_history)
+        self.debounce_sec = debounce_sec
+        self.on_transition_callback = on_transition_callback
+
+        self.session_start_str: str = datetime.now().strftime("%H:%M:%S")
+        self._current_state: OccupancyState = "EMPTY"
+        self._current_people_count: int = 0
+        self._last_event_time: float = 0.0
+        self._state_entered_at: float = time.time()
+        self._peak_mvs_in_window: float = 0.0
+        self.peak_occupancy: int = 0
+        self.total_transitions: int = 0
+        self.zone_dwell_seconds: Dict[str, float] = {}
+        self._last_tick: float = time.time()
+
+    def ingest_tracking_state(
+        self,
+        occupancy_state: OccupancyState,
+        active_zone: str,
+        confidence: float,
+        mvs_current: float,
+        threshold_on: float,
+        people_count: int = 0,
         is_calibrating: bool = False,
+        now: Optional[float] = None,
     ) -> Optional[AggregatedEvent]:
-        now = time.time()
-        dt = max(0.0, min(1.0, now - self._last_tick_time))
-        self._last_tick_time = now
+        if now is None:
+            now = time.time()
+
+        dt = max(0.0, min(1.0, now - self._last_tick))
+        self._last_tick = now
 
         if is_calibrating:
             return None
 
-        people_count = len(people)
         self.peak_occupancy = max(self.peak_occupancy, people_count)
 
-        for p in people:
-            z = p.zone or "Zona de Abrangência"
-            self.zone_dwell_seconds[z] = self.zone_dwell_seconds.get(z, 0.0) + dt
-            if p.activity == "moving":
-                self.zone_motion_seconds[z] = self.zone_motion_seconds.get(z, 0.0) + dt
+        if occupancy_state != "EMPTY" and active_zone and active_zone != "NONE":
+            self.zone_dwell_seconds[active_zone] = self.zone_dwell_seconds.get(active_zone, 0.0) + dt
 
-        for node_id, st in nodes_status.items():
-            if node_id not in self.node_perturbation_acc:
-                self.node_perturbation_acc[node_id] = []
-            self.node_perturbation_acc[node_id].append(st.perturbation_score)
-            if len(self.node_perturbation_acc[node_id]) > 300:
-                self.node_perturbation_acc[node_id] = self.node_perturbation_acc[node_id][-300:]
+        self._peak_mvs_in_window = max(self._peak_mvs_in_window, mvs_current)
 
-        active_zones_sorted = sorted(list({p.zone for p in people}))
-        active_zones_tuple = tuple(active_zones_sorted)
+        state_changed = occupancy_state != self._current_state
+        people_changed = people_count != self._current_people_count
+        elapsed_since_event = now - self._last_event_time
 
-        elapsed = now - self._last_record_time
-        count_changed = (people_count != self._last_people_count) and (elapsed >= 1.2)
-        zone_changed = (active_zones_tuple != self._last_active_zones) and (elapsed >= 1.8)
-        periodic_due = elapsed >= settings.EVENT_AGGREGATION_INTERVAL_SEC
+        is_major_entry_or_exit = (
+            (self._current_state == "EMPTY" and occupancy_state == "MOTION")
+            or (self._current_state != "EMPTY" and occupancy_state == "EMPTY")
+            or (people_changed and elapsed_since_event >= 1.5)
+        )
+        should_emit = False
+        if state_changed or people_changed:
+            if is_major_entry_or_exit and elapsed_since_event >= 1.2:
+                should_emit = True
+            elif elapsed_since_event >= min(4.0, self.debounce_sec * 0.35):
+                should_emit = True
+        elif occupancy_state != "EMPTY" and elapsed_since_event >= self.debounce_sec:
+            should_emit = True
 
-        if not (periodic_due or count_changed or zone_changed):
+        if not should_emit:
             return None
 
-        if zone_changed and self._last_people_count > 0:
-            self.total_zone_transitions += 1
+        prev_state = self._current_state
+        self._current_state = occupancy_state
+        self._current_people_count = people_count
+        self._last_event_time = now
+        self._state_entered_at = now
+        self.total_transitions += 1
 
-        self._last_record_time = now
-        self._last_people_count = people_count
-        self._last_active_zones = active_zones_tuple
+        summary = self._format_transition_summary(
+            from_state=prev_state,
+            to_state=occupancy_state,
+            people_count=people_count,
+            zone=active_zone,
+            confidence=confidence,
+            mvs_peak=self._peak_mvs_in_window,
+            threshold_on=threshold_on,
+        )
+        self._peak_mvs_in_window = mvs_current
 
-        event = self._build_event(people, nodes_status, now)
+        event = AggregatedEvent(
+            timestamp=datetime.fromtimestamp(now).strftime("%H:%M:%S"),
+            epoch=now,
+            from_state=prev_state,
+            to_state=occupancy_state,
+            people_count=people_count,
+            active_zone=active_zone,
+            confidence=round(confidence, 2),
+            mvs_peak=round(mvs_current, 8),
+            summary=summary,
+        )
         self.history.append(event)
+
+        if self.on_transition_callback is not None:
+            self.on_transition_callback(event)
+
         return event
 
-    def record_system_event(self, summary_text: str, people_count: int = 0) -> AggregatedEvent:
-        """Registra um evento operacional explícito (ex: Calibração concluída, Troca de modo)."""
+    def record_system_event(
+        self,
+        summary_text: str,
+        state: OccupancyState = "EMPTY",
+        zone: str = "NONE",
+        people_count: int = 0,
+    ) -> AggregatedEvent:
         now = time.time()
         event = AggregatedEvent(
             timestamp=datetime.fromtimestamp(now).strftime("%H:%M:%S"),
             epoch=now,
+            from_state=self._current_state,
+            to_state=state,
             people_count=people_count,
-            active_zones=[],
-            activity_level="low",
+            active_zone=zone,
+            confidence=0.98,
+            mvs_peak=0.0,
             summary=summary_text,
         )
         self.history.append(event)
-        self._last_record_time = now
+        self._last_event_time = now
+        if self.on_transition_callback is not None:
+            self.on_transition_callback(event)
         return event
 
-    def _build_event(
-        self,
-        people: List[PersonCoordinate],
-        nodes_status: Dict[str, NodeStatus],
-        now: float,
-    ) -> AggregatedEvent:
-        ts_str = datetime.fromtimestamp(now).strftime("%H:%M:%S")
-        count = len(people)
+    @staticmethod
+    def _format_transition_summary(
+        from_state: OccupancyState,
+        to_state: OccupancyState,
+        people_count: int,
+        zone: str,
+        confidence: float,
+        mvs_peak: float,
+        threshold_on: float,
+    ) -> str:
+        conf_pct = int(round(confidence * 100))
+        ratio = mvs_peak / max(1e-9, threshold_on)
+        zone_clean = zone.replace("_", " ").title() if zone != "NONE" else "Área Monitorada"
+        p_label = f"{people_count} pessoa" if people_count == 1 else f"{people_count} pessoas"
 
-        if count == 0:
-            max_node_score = max((n.perturbation_score for n in nodes_status.values()), default=0.0)
-            act_level: Literal["none", "low", "moderate", "high"] = "low" if max_node_score > 0.12 else "none"
-            summary = "Zona de Abrangência livre (0 pessoas detectadas; links RF estáveis)"
-            return AggregatedEvent(
-                timestamp=ts_str,
-                epoch=now,
-                people_count=0,
-                active_zones=[],
-                activity_level=act_level,
-                summary=summary,
-            )
+        if to_state == "EMPTY" or people_count == 0:
+            return f"Ambiente livre (0 pessoas). Canal RF estável em repouso ({conf_pct}% confiança)."
+        if from_state == "EMPTY" and to_state == "MOTION":
+            return f"Entrada detectada: {p_label} em movimento em {zone_clean} ({ratio:.1f}x limiar, {conf_pct}% confiança)."
+        if to_state == "PRESENCE_STATIC":
+            return f"Presença estática: {p_label} retida(s) em {zone_clean} ({conf_pct}% confiança)."
+        return f"Atividade contínua: {p_label} em movimento em {zone_clean} (intensidade {ratio:.1f}x, {conf_pct}% confiança)."
 
-        moving_count = sum(1 for p in people if p.activity == "moving")
-        if moving_count >= 2 or (count >= 3 and moving_count >= 1):
-            activity_level = "high"
-        elif moving_count == 1:
-            activity_level = "moderate"
-        else:
-            activity_level = "low"
-
-        zone_group: Dict[tuple[str, str], int] = {}
-        active_zones_list: List[str] = []
-        for p in people:
-            if p.zone not in active_zones_list:
-                active_zones_list.append(p.zone)
-            state_pt = "em movimento" if p.activity == "moving" else "parada"
-            key = (state_pt, p.zone)
-            zone_group[key] = zone_group.get(key, 0) + 1
-
-        parts: List[str] = []
-        for (state_pt, z_name), qty in zone_group.items():
-            prep = "no" if z_name.startswith(("Centro", "Setor")) else "na"
-            state_label = "paradas" if (qty > 1 and state_pt == "parada") else state_pt
-            parts.append(f"{qty} {state_label} {prep} {z_name}")
-
-        noun = "pessoa detectada" if count == 1 else "pessoas detectadas"
-        summary = f"{count} {noun} ({', '.join(parts)})"
-
-        return AggregatedEvent(
-            timestamp=ts_str,
-            epoch=now,
-            people_count=count,
-            active_zones=active_zones_list,
-            activity_level=activity_level,
-            summary=summary,
-        )
-
-    def get_recent_events(self, limit: int = 25) -> List[AggregatedEvent]:
+    def get_recent_events(self, limit: int = 20) -> List[AggregatedEvent]:
         items = list(self.history)[-limit:]
         items.reverse()
         return items
-
-    def get_analytical_digest(
-        self,
-        room_config: RoomConfig,
-        current_people: List[PersonCoordinate],
-        nodes_status: Dict[str, NodeStatus],
-        topology_info: Optional[TopologyInfo] = None,
-        coverage_info: Optional[CoverageZoneInfo] = None,
-        calibration_mode: str = "nominal",
-    ) -> dict:
-        events_list = [
-            {
-                "timestamp": e.timestamp,
-                "people_count": e.people_count,
-                "active_zones": e.active_zones,
-                "activity_level": e.activity_level,
-                "summary": e.summary,
-            }
-            for e in list(self.history)[-60:]
-        ]
-
-        total_dwell = sum(self.zone_dwell_seconds.values())
-        zone_stats = {}
-        for z, dwell_val in self.zone_dwell_seconds.items():
-            dwell = round(dwell_val, 1)
-            motion = round(self.zone_motion_seconds.get(z, 0.0), 1)
-            pct = round((dwell / total_dwell) * 100.0, 1) if total_dwell > 0 else 0.0
-            zone_stats[z] = {
-                "dwell_person_seconds": dwell,
-                "motion_person_seconds": motion,
-                "share_percent": pct,
-            }
-
-        nodes_digest = {}
-        for nid, st in nodes_status.items():
-            hist_scores = self.node_perturbation_acc.get(nid, [st.perturbation_score])
-            nodes_digest[nid] = {
-                "name": st.name,
-                "online": st.online,
-                "position_xy": [round(st.x, 2), round(st.y, 2)],
-                "estimated_distance_m": st.estimated_distance_m,
-                "current_rssi_dbm": st.rssi,
-                "current_perturbation": st.perturbation_score,
-                "subcarrier_diversity": st.subcarrier_diversity,
-                "energy_ratio": st.energy_ratio,
-                "estimated_people_on_link": st.estimated_people_on_link,
-                "longitudinal_focus": st.longitudinal_focus,
-                "avg_perturbation": round(sum(hist_scores) / max(1, len(hist_scores)), 3),
-                "max_perturbation": round(max(hist_scores, default=0.0), 3),
-            }
-
-        return {
-            "session_start": self.session_start_time,
-            "current_time": datetime.now().strftime("%H:%M:%S"),
-            "calibration_mode": calibration_mode,
-            "coverage_info": coverage_info.model_dump() if coverage_info else None,
-            "topology_info": topology_info.model_dump() if topology_info else None,
-            "room_dimensions_m": {
-                "width_m": room_config.width_m,
-                "length_m": room_config.length_m,
-                "area_m2": coverage_info.active_area_m2 if coverage_info else round(room_config.width_m * room_config.length_m, 1),
-            },
-            "current_occupancy": len(current_people),
-            "peak_occupancy": self.peak_occupancy,
-            "total_zone_transitions": self.total_zone_transitions,
-            "zone_statistics": zone_stats,
-            "rf_nodes_telemetry": nodes_digest,
-            "event_timeline": events_list,
-        }

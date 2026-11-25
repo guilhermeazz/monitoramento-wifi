@@ -10,46 +10,56 @@ from .models import CSIPacket
 
 logger = logging.getLogger("wifi_spatial.udp")
 
-
-class CSIDatagramProtocol(asyncio.DatagramProtocol):
-    """
-    Protocolo UDP Assíncrono (asyncio.DatagramProtocol) na porta 5555
-    para recepção de pacotes CSI (JSON ou Binário Compactado) vindos dos módulos ESP32.
-    """
-
-    def __init__(self, on_packet_callback: Callable[[CSIPacket, str], None]):
-        super().__init__()
-        self.on_packet_callback = on_packet_callback
-        self.transport: Optional[asyncio.DatagramTransport] = None
-
-    def connection_made(self, transport: asyncio.BaseTransport) -> None:
-        self.transport = transport  # type: ignore[assignment]
-        sockname = transport.get_extra_info("sockname")
-        logger.info(f"Servidor UDP CSI escutando em {sockname}")
-
-    def datagram_received(self, data: bytes, addr: tuple) -> None:
-        packet = parse_csi_payload(data)
-        if packet is not None:
-            self.on_packet_callback(packet, "hardware")
-
-    def error_received(self, exc: Exception) -> None:
-        logger.warning(f"Erro no socket UDP CSI: {exc}")
-
-    def connection_lost(self, exc: Optional[Exception]) -> None:
-        logger.info("Socket UDP CSI encerrado.")
+BINARY_HEADER_FMT = "<HBB6sQbbBH"
+BINARY_HEADER_SIZE = struct.calcsize(BINARY_HEADER_FMT)  # 23 bytes
+CSI_PACKET_MAGIC = 0xC510
 
 
 def parse_csi_payload(data: bytes) -> Optional[CSIPacket]:
     """
-    Decodifica pacotes CSI recebidos via UDP:
-    1. Formato JSON (ex: {"node_id":"esp_1","rssi":-48,"csi":[...]} ou com "csi_raw" e "timestamp")
-    2. Formato Binário Compactado: Header 'CSI1' (4B) + node_idx (1B) + rssi (1B int8) + count (2B uint16) + int8[]
+    Decodifica pacotes CSI recebidos via UDP (Zero-Blocking):
+    1. Protocolo Binário Compacto v1 (magic 0xC510, little-endian, 23B header + int8[] I/Q).
+    2. Protocolo Binário Legado ('CSI1').
+    3. Formato JSON UTF-8.
     """
     if not data:
         return None
 
     try:
-        # Verifica se é pacote binário compactado com magic header b"CSI1"
+        # 1. Protocolo Binário Compacto (0xC510) do Firmware ESP32-S3
+        if len(data) >= BINARY_HEADER_SIZE:
+            magic = struct.unpack_from("<H", data, 0)[0]
+            if magic == CSI_PACKET_MAGIC:
+                (
+                    _magic,
+                    _version,
+                    node_num,
+                    src_mac_bytes,
+                    timestamp_us,
+                    rssi,
+                    noise_floor,
+                    channel,
+                    csi_len,
+                ) = struct.unpack_from(BINARY_HEADER_FMT, data, 0)
+
+                end_idx = BINARY_HEADER_SIZE + csi_len
+                if len(data) < end_idx or csi_len < 4:
+                    return None
+
+                csi_ints = list(struct.unpack_from(f"<{csi_len}b", data, BINARY_HEADER_SIZE))
+                mac_str = ":".join(f"{b:02x}" for b in src_mac_bytes)
+                return CSIPacket(
+                    node_id=f"esp_{node_num}",
+                    timestamp=time.time(),
+                    timestamp_us=int(timestamp_us),
+                    src_mac=mac_str,
+                    rssi=int(rssi),
+                    noise_floor=int(noise_floor),
+                    channel=int(channel),
+                    csi_raw=csi_ints,
+                )
+
+        # 2. Formato Binário Legado ('CSI1')
         if len(data) >= 8 and data[:4] == b"CSI1":
             node_idx, rssi, byte_count = struct.unpack("<bbH", data[4:8])
             payload_bytes = data[8 : 8 + byte_count]
@@ -61,7 +71,7 @@ def parse_csi_payload(data: bytes) -> Optional[CSIPacket]:
                 csi_raw=csi_ints,
             )
 
-        # Caso contrário, decodifica como JSON UTF-8
+        # 3. Fallback JSON UTF-8
         text = data.decode("utf-8", errors="ignore").strip()
         if not text.startswith("{"):
             return None
@@ -69,15 +79,43 @@ def parse_csi_payload(data: bytes) -> Optional[CSIPacket]:
         raw_dict = json.loads(text)
         return CSIPacket.model_validate(raw_dict)
     except Exception as exc:
-        logger.debug(f"Pacote UDP descartado (formato inválido): {exc}")
+        logger.debug(f"Pacote UDP inválido descartado: {exc}")
         return None
 
 
+class CSIDatagramProtocol(asyncio.DatagramProtocol):
+    """
+    Protocolo UDP Assíncrono Zero-Blocking na porta 5555.
+    Apenas decodifica o pacote e empilha no ring buffer do nó sem bloquear o event loop.
+    """
+
+    def __init__(self, on_packet_callback: Callable[[CSIPacket, str], None]):
+        super().__init__()
+        self.on_packet_callback = on_packet_callback
+        self.transport: Optional[asyncio.DatagramTransport] = None
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = transport  # type: ignore[assignment]
+        sockname = transport.get_extra_info("sockname")
+        logger.info(f"Receptor UDP CSI (Binário 0xC510 / JSON) escutando em {sockname}")
+
+    def datagram_received(self, data: bytes, addr: tuple) -> None:
+        # Ignora pacotes curtos de probe/ping ("PING")
+        if len(data) <= 12:
+            return
+        packet = parse_csi_payload(data)
+        if packet is not None:
+            self.on_packet_callback(packet, "hardware")
+
+    def error_received(self, exc: Exception) -> None:
+        logger.warning(f"Erro no socket UDP CSI: {exc}")
+
+    def connection_lost(self, exc: Optional[Exception]) -> None:
+        logger.info("Socket UDP CSI encerrado.")
+
+
 class UDPReceiverServer:
-    """
-    Gerenciador do servidor UDP assíncrono na porta 5555 e detector de atividade (heartbeat 3.0s)
-    dos módulos ESP32.
-    """
+    """Gerenciador do servidor UDP assíncrono e monitor de heartbeat por nó ESP32-S3."""
 
     def __init__(self, on_packet_callback: Callable[[CSIPacket, str], None]):
         self.on_packet_callback = on_packet_callback
@@ -87,27 +125,15 @@ class UDPReceiverServer:
         self.last_seen_by_node: Dict[str, float] = {}
 
     def record_heartbeat(self, node_id: str, timestamp: Optional[float] = None) -> None:
-        """Registra o instante do último pacote CSI válido recebido de um módulo ESP32."""
         self.last_seen_by_node[node_id] = timestamp if timestamp is not None else time.time()
 
     def is_node_online(self, node_id: str, now: Optional[float] = None) -> bool:
-        """
-        Considera um nó ESP32 como ATIVO (online) se ele enviou pacotes CSI
-        nos últimos 3.0 segundos (settings.NODE_ONLINE_TIMEOUT_SEC).
-        """
         if now is None:
             now = time.time()
         last_ts = self.last_seen_by_node.get(node_id, 0.0)
         return last_ts > 0.0 and (now - last_ts) <= settings.NODE_ONLINE_TIMEOUT_SEC
 
-    def get_active_node_ids(self, candidate_ids: List[str], now: Optional[float] = None) -> List[str]:
-        """Retorna a lista de node_ids que estão online nos últimos 3.0 segundos."""
-        if now is None:
-            now = time.time()
-        return [nid for nid in candidate_ids if self.is_node_online(nid, now=now)]
-
     def clear_heartbeats(self, keep_node_ids: Optional[List[str]] = None) -> None:
-        """Limpa imediatamente o status online de nós desativados (ex: troca de topologia no simulador)."""
         if keep_node_ids is None:
             self.last_seen_by_node.clear()
             return
@@ -127,9 +153,7 @@ class UDPReceiverServer:
             self.protocol = protocol  # type: ignore[assignment]
             self.bound_port = port
         except OSError as exc:
-            logger.warning(
-                f"Porta UDP {port} ocupada ({exc}). Usando porta efêmera de fallback."
-            )
+            logger.warning(f"Porta UDP {port} ocupada ({exc}). Alocando porta efêmera.")
             transport, protocol = await loop.create_datagram_endpoint(
                 lambda: CSIDatagramProtocol(self._handle_packet),
                 local_addr=(host, 0),

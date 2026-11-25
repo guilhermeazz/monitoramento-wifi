@@ -1,72 +1,81 @@
 import time
 from typing import Dict, List, Literal, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
-TopologyModeCode = Literal[
+OccupancyState = Literal["EMPTY", "PRESENCE_STATIC", "MOTION"]
+CalibrationState = Literal[
+    "IDLE",
+    "PREPARING",
+    "CAPTURING",
+    "STAGE1_DONE",
+    "PREPARING_STAGE2",
+    "CAPTURING_STAGE2",
+    "COMPLETED",
+]
+CalibrationQuality = Literal["OPTIMAL", "ACCEPTABLE", "NOISY", "UNCALIBRATED"]
+TopologyMode = Literal[
     "NO_SENSORS",
-    "SINGLE_LINK_CORRIDOR",
-    "DUAL_LINK_SECTOR",
-    "FULL_MESH_2D",
+    "SINGLE_NODE_FRESNEL",
+    "DUAL_NODE_SECTOR",
+    "MULTI_NODE_KALMAN_2D",
 ]
-
-CalibrationMode = Literal[
-    "instant_zero",
-    "stage1_silence",
-    "stage2_1person",
-    "stage3_2persons",
-    "crowd_compensated",
-    "empty_room",
-    "person_ref",
-    "nominal",
-]
-CalibrationStateCode = Literal["idle", "countdown", "calibrating", "completed"]
-SensitivityLevel = Literal["low", "normal", "high"]
+UncertaintyMode = Literal["NONE", "FRESNEL_HALO", "SECTOR_ZONE", "POINT_2D"]
 
 
 class NodePosition(BaseModel):
-    """Posição normalizada (0.0 a 1.0) de um nó de RF (TX ou RX) na área de abrangência."""
+    """Posição normalizada [0.0, 1.0] de um nó RF (Cisco Linksys E1200 TX ou ESP32-S3 RX)."""
 
-    id: str = Field(..., description="Identificador único do nó (ex: tx_router, esp_1)")
-    name: str = Field(..., description="Nome amigável exibido na interface")
-    x: float = Field(..., ge=0.0, le=1.0, description="Coordenada X normalizada [0.0, 1.0]")
-    y: float = Field(..., ge=0.0, le=1.0, description="Coordenada Y normalizada [0.0, 1.0]")
+    id: str = Field(..., description="ID único (ex: tx_router, esp_1)")
+    name: str = Field(..., description="Nome de exibição")
+    mac: str = Field(default="", description="MAC Address opcional do dispositivo")
+    x: float = Field(..., ge=0.0, le=1.0)
+    y: float = Field(..., ge=0.0, le=1.0)
+
+
+class GeometryWarning(BaseModel):
+    """Aviso discreto de geometria física (distância TX-RX fora da faixa ou colinearidade)."""
+
+    code: str
+    severity: Literal["info", "warning"] = "warning"
+    node_id: Optional[str] = None
+    message: str
 
 
 class RoomConfig(BaseModel):
-    """Configuração geométrica da área de abrangência (auto-mapeada via RSSI/CSI)."""
+    """Configuração geométrica da área monitorada em metros reais."""
 
-    width_m: float = Field(default=5.0, gt=1.0, le=50.0, description="Largura efetiva da área em metros (Eixo X)")
-    length_m: float = Field(default=4.5, gt=1.0, le=50.0, description="Comprimento efetivo da área em metros (Eixo Y)")
-    tx: NodePosition = Field(..., description="Posição do Roteador Wi-Fi Transmissor (TX)")
-    rx_nodes: List[NodePosition] = Field(..., min_length=1, description="Lista de nós receptores ESP32 (RX)")
+    width_m: float = Field(default=5.0, gt=1.0, le=30.0)
+    length_m: float = Field(default=4.5, gt=1.0, le=30.0)
+    tx: NodePosition
+    rx_nodes: List[NodePosition] = Field(..., min_length=1)
 
 
-class CoverageZoneInfo(BaseModel):
-    """Métricas de auto-mapeamento da Zona de Abrangência Ativa (Log-Distance Path Loss + Elipse de Fresnel)."""
+class RoomLayoutResponse(BaseModel):
+    """Resposta do endpoint de layout da sala com diagnósticos geométricos e matriz RTI."""
 
-    active_area_m2: float = Field(default=13.3, description="Área efetiva monitorada em metros quadrados")
-    avg_tx_rx_distance_m: float = Field(default=3.0, description="Distância média estimada Roteador <-> ESP32 (m)")
-    lateral_radius_m: float = Field(default=1.8, description="Raio lateral de sensibilidade ao redor do feixe (m)")
-    auto_mapped: bool = Field(default=True, description="Indica posicionamento automático via atenuação RF")
-    node_distances_m: Dict[str, float] = Field(default_factory=dict, description="Distância TX-RX estimada por nó (m)")
-    description: str = Field(
-        default="Área de Abrangência Ativa: ~13.3 m² (Distância TX-RX: 3.0 m)",
-        description="Resumo textual da área de abrangência ativa",
-    )
+    room_config: RoomConfig
+    grid_nx: int
+    grid_ny: int
+    cell_size_m: float
+    link_distances_m: Dict[str, float] = Field(default_factory=dict)
+    warnings: List[GeometryWarning] = Field(default_factory=list)
 
 
 class CSIPacket(BaseModel):
-    """Pacote bruto de Channel State Information (CSI) recebido via UDP ou Simulador."""
+    """Pacote CSI bruto decodificado do protocolo UDP binário (0xC510) ou Simulador."""
 
-    node_id: str = Field(..., description="Identificador do ESP32 (ex: esp_1)")
-    timestamp: float = Field(default_factory=time.time, description="Timestamp UNIX em segundos")
-    rssi: int = Field(default=-50, description="Indicador de potência do sinal recebido (dBm)")
-    csi_raw: List[int] = Field(..., description="Vetor intercalado de pares [Imag_0, Real_0, Imag_1, Real_1, ...]")
+    node_id: str
+    timestamp: float = Field(default_factory=time.time)
+    timestamp_us: int = 0
+    src_mac: str = "00:00:00:00:00:00"
+    rssi: int = -50
+    noise_floor: int = -92
+    channel: int = 6
+    csi_raw: List[float] = Field(..., description="Pares intercalados [Imag_0, Real_0, ...]")
 
     @model_validator(mode="before")
     @classmethod
-    def normalize_csi_fields(cls, values: dict) -> dict:
+    def normalize_fields(cls, values: dict) -> dict:
         if isinstance(values, dict):
             if "csi_raw" not in values and "csi" in values:
                 values["csi_raw"] = values.pop("csi")
@@ -75,198 +84,99 @@ class CSIPacket(BaseModel):
         return values
 
 
-class NodeStatus(BaseModel):
-    """Telemetria DSP avançada (Pearson Correlation, Z-Score Noise Gate, PCA/SVD) de cada receptor ESP32."""
+class NodeSummaryStatus(BaseModel):
+    """Status enxuto de um nó ESP32-S3 para o payload leve do WebSocket (< 1 KB)."""
 
-    node_id: str
+    id: str
     name: str
-    x: float
-    y: float
-    rssi: int = -90
-    rssi_avg: float = -90.0
-    estimated_distance_m: float = 3.0
-    packets_per_sec: float = 0.0
-    current_energy: float = 0.0
-    effective_noise_floor: float = 0.04
-    net_motion_energy: float = 0.0
-    z_score: float = 0.0
-    pearson_r: float = 1.0
-    motion_index: float = 0.0
-    motion_threshold: float = 0.04
-    is_triggered: bool = False
-    ttl_remaining_sec: float = 0.0
-    motion_score: float = 0.0
-    presence_score: float = 0.0
-    perturbation_score: float = 0.0
-    walking_energy: float = 0.0
-    vital_energy: float = 0.0
-    shadow_attenuation: float = 0.0
-    pca_s1: float = 0.0
-    pca_s2: float = 0.0
-    pca_s3: float = 0.0
-    pca_s2_s1_ratio: float = 0.0
-    unit_person_energy: float = 1.0
-    subcarrier_diversity: float = 0.0
-    energy_ratio: float = 0.0
-    estimated_people_on_link: int = 0
-    longitudinal_focus: float = 0.5
-    top_k_indices: List[int] = Field(default_factory=list)
     online: bool = False
-    last_seen: float = 0.0
-    amplitudes_preview: List[float] = Field(default_factory=list)
-    phases_preview: List[float] = Field(default_factory=list)
-    csi_ratio_preview: List[float] = Field(default_factory=list)
+    state: OccupancyState = "EMPTY"
+    intensity: float = 0.0
+    x: float = 0.5
+    y: float = 0.85
 
 
-class TopologyInfo(BaseModel):
-    """Diagnóstico dinâmico da topologia de sensores ativos e capacidades físicas habilitadas."""
+class NodeDiagnosticDetail(BaseModel):
+    """Telemetria detalhada de engenharia enviada apenas quando diagnostics=true."""
 
-    active_nodes: int = Field(..., ge=0, description="Quantidade de módulos ESP32 online nos últimos 3.0s")
-    mode_code: TopologyModeCode = Field(..., description="Código da máquina de estados de topologia")
-    mode_title: str = Field(..., description="Título amigável do modo de operação atual")
-    precision_level: str = Field(..., description="Nível de precisão espacial física do setup")
-    capabilities_enabled: List[str] = Field(default_factory=list, description="Lista do que este setup faz agora")
-    limitations: List[str] = Field(default_factory=list, description="Limitações físicas atuais da topologia")
-    setup_recommendation: str = Field(..., description="Recomendação prática de posicionamento dos sensores")
-
-
-class PersonCoordinate(BaseModel):
-    """Pessoa rastreada no plano 2D/3D com estado cinemático e retenção de presença parada."""
-
-    id: str = Field(..., description="ID de rastreamento (ex: P1, P2)")
-    x: float = Field(..., ge=0.0, le=1.0, description="Posição X normalizada [0.0, 1.0]")
-    y: float = Field(..., ge=0.0, le=1.0, description="Coordenada Y normalizada [0.0, 1.0]")
-    x_m: float = Field(..., description="Posição X em metros")
-    y_m: float = Field(..., description="Posição Y em metros")
-    vx: float = Field(default=0.0, description="Velocidade estimada no eixo X")
-    vy: float = Field(default=0.0, description="Velocidade estimada no eixo Y")
-    zone: str = Field(..., description="Quadrante, corredor ou zona atual")
-    activity: Literal["moving", "stationary"] = Field(..., description="Estado de atividade dinâmico")
-    posture_state: Literal["standing_moving", "stationary"] = Field(
-        default="standing_moving",
-        description="Estado volumétrico para renderização 3D",
-    )
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Índice de confiança da detecção [0.0, 1.0]")
+    id: str
+    name: str
+    online: bool
+    state: OccupancyState
+    pps: float
+    rssi: int
+    noise_floor: int
+    channel: int
+    turbulence: float
+    turbulence_filtered: float
+    mvs: float
+    z_score: float = 0.0
+    gain_g: float = 1.0
+    calibrated_energy: float = 0.0
+    threshold_on: float
+    threshold_off: float
+    intensity: float
+    hold_remaining_sec: float
+    quality: CalibrationQuality
+    stage2_calibrated: bool = False
+    eigenvalues: List[float] = Field(default_factory=list)
+    nbvi_indices: List[int] = Field(default_factory=list)
+    nbvi_scores: List[float] = Field(default_factory=list)
+    amplitudes_norm: List[float] = Field(default_factory=list)
 
 
-class AggregatedEvent(BaseModel):
-    """Evento semântico temporal gerado pelo EventAggregator para consumo humano e da LLM."""
+class SpatialTarget(BaseModel):
+    """Alvo espacial rastreado por Filtro de Kalman 2D Multi-Objeto (MOT)."""
 
-    timestamp: str = Field(..., description="Horário formatado HH:MM:SS")
-    epoch: float = Field(default_factory=time.time, description="Timestamp UNIX")
-    people_count: int = Field(..., ge=0)
-    active_zones: List[str] = Field(default_factory=list)
-    activity_level: Literal["none", "low", "moderate", "high"] = "none"
-    summary: str = Field(..., description="Resumo em linguagem natural do evento")
-
-
-class GlobalDecision(BaseModel):
-    """Métricas da fusão matemática multi-sensor global e justificativa científica da decisão."""
-
-    decision_people_count: int = 0
-    decision_reason: str = "Zona de Abrangência Livre"
-    global_svd_s1: float = 0.0
-    global_svd_s2: float = 0.0
-    global_svd_ratio: float = 0.0
-    global_energy_ratio: float = 0.0
-    nodes_triggered_count: int = 0
-    dominant_node_id: Optional[str] = None
+    id: str = "P1"
+    x: float = Field(..., ge=0.0, le=1.0)
+    y: float = Field(..., ge=0.0, le=1.0)
+    x_m: float
+    y_m: float
+    vx: float = 0.0
+    vy: float = 0.0
+    state: OccupancyState = "MOTION"
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    zone: str = "ZONA_CENTRAL"
 
 
-class LiveStatePayload(BaseModel):
-    """Payload consolidado transmitido via WebSocket (/ws/live) a 10 Hz."""
+class CalibrationStatusPayload(BaseModel):
+    """Estado em tempo real do Wizard de Calibração em 2 Etapas."""
 
-    mode: Literal["simulation", "hardware"]
-    simulated_people: int
-    simulated_nodes: int = 1
-    sensitivity: SensitivityLevel = "normal"
-    calibrated: bool
-    step1_calibrated: bool = False
-    step2_calibrated: bool = False
-    calibrating: bool = False
-    calibration_state: CalibrationStateCode = "idle"
-    calibration_mode: CalibrationMode = "nominal"
-    countdown_remaining: float = 0.0
-    calibration_progress: float = 0.0
+    state: CalibrationState = "IDLE"
+    stage: int = 1
+    progress: float = 0.0
+    remaining_sec: float = 0.0
+    quality: CalibrationQuality = "UNCALIBRATED"
+    calibrated: bool = False
+    stage2_calibrated: bool = False
+    noise_diagnosis: str = "Aguardando calibração inicial."
     last_calibrated_at: Optional[str] = None
-    overall_confidence: float = 0.92
-    agitation_level: Literal["none", "low", "moderate", "high"] = "none"
-    agitation_score: float = 0.0
-    coverage_info: CoverageZoneInfo
-    topology_info: TopologyInfo
-    room_config: RoomConfig
-    nodes_status: Dict[str, NodeStatus]
-    people_count: int
-    people_coordinates: List[PersonCoordinate]
-    heatmap_grid: List[List[float]]
-    active_zone: str
-    total_packets_per_sec: float
-    recent_events: List[AggregatedEvent]
-    global_decision: GlobalDecision = Field(default_factory=GlobalDecision)
 
 
-class ModeChangeRequest(BaseModel):
-    """Requisição para alternar entre modo Simulador, Hardware Real e Sensibilidade de Contagem."""
+class LLMInsightPayload(BaseModel):
+    """Insight contextual assíncrono gerado pela camada analítica."""
 
-    mode: Optional[Literal["simulation", "hardware"]] = None
-    simulated_people: Optional[int] = Field(default=None, ge=0, le=4)
-    simulated_nodes: Optional[int] = Field(default=None, ge=0, le=3)
-    sensitivity: Optional[SensitivityLevel] = None
-
-
-class CalibrateRequest(BaseModel):
-    """Parâmetros para Calibração Científica em 3 Estágios (Silêncio, 1 Pessoa, 2+ Pessoas)."""
-
-    mode: Literal[
-        "instant_zero",
-        "stage1_silence",
-        "stage2_1person",
-        "stage3_2persons",
-        "crowd_compensated",
-        "empty_room",
-        "person_ref",
-    ] = Field(
-        default="stage1_silence",
-        description="Estágio da calibração: 'instant_zero' (3s imediato), 'stage1_silence' (15s vazio), 'stage2_1person' (20s 1 pessoa), 'stage3_2persons' (15s 2 pessoas)",
-    )
-    delay_seconds: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=30.0,
-        description="Segundos de contagem regressiva (COUNTDOWN) antes de iniciar a coleta CSI",
-    )
-    duration_seconds: float = Field(
-        default=15.0,
-        ge=2.0,
-        le=60.0,
-        description="Duração da coleta de pacotes CSI em segundos (CALIBRATING)",
-    )
-
-    @model_validator(mode="before")
-    @classmethod
-    def support_legacy_duration_field(cls, values: dict) -> dict:
-        if isinstance(values, dict):
-            if "duration_seconds" not in values and "duration_sec" in values:
-                values["duration_seconds"] = values.pop("duration_sec")
-        return values
+    summary: str = "Monitoramento contínuo de ocupação e contagem ativo."
+    updated_at: str = "--:--:--"
+    provider: str = "statistical-engine"
 
 
-class LLMReportRequest(BaseModel):
-    """Requisição opcionalmente customizada para geração de relatório analítico via Ollama Local."""
+class LLMReportResponse(BaseModel):
+    """Resposta completa da análise executiva ou pergunta livre à LLM."""
 
-    focus_area: Optional[str] = Field(default=None, description="Foco específico opcional para o relatório")
-    model: Optional[str] = Field(default=None, description="Modelo Ollama opcional (ex: qwen2.5:7b, qwen3:8b, gemma3:4b)")
-
-
-class LLMAskRequest(BaseModel):
-    """Pergunta em linguagem natural enviada pelo operador sobre o histórico da sala."""
-
-    question: str = Field(..., min_length=2, max_length=600)
-    model: Optional[str] = Field(default=None, description="Modelo Ollama opcional")
+    status: str = "ok"
+    mode: Literal["quick", "full_report", "ask"] = "full_report"
+    provider: str = "statistical-engine"
+    model: str = "qwen2.5:7b"
+    summary: str = Field(..., description="Resumo curto de 2 frases")
+    markdown_report: str = Field(..., description="Análise detalhada estruturada em Markdown")
+    updated_at: str
+    events_analyzed: int = 0
 
 
 class LLMStatusResponse(BaseModel):
-    """Status de conectividade do servidor Ollama Local (http://localhost:11434) e modelos baixados."""
+    """Status do motor Ollama Local e modelos disponíveis."""
 
     online: bool
     base_url: str
@@ -276,12 +186,125 @@ class LLMStatusResponse(BaseModel):
     badge_text: str
 
 
-class LLMResponse(BaseModel):
-    """Resposta estruturada do serviço de inteligência analítica (Ollama Local / Fallback Estatístico)."""
+class AggregatedEvent(BaseModel):
+    """Evento semântico de transição de estado com debounce."""
 
-    status: str = "ok"
-    provider: str = Field(..., description="'ollama-local' ou 'local-statistical-fallback'")
-    model: str
-    content: str = Field(..., description="Conteúdo analítico em Markdown")
-    generated_at: str
-    events_analyzed: int
+    timestamp: str
+    epoch: float = Field(default_factory=time.time)
+    from_state: OccupancyState
+    to_state: OccupancyState
+    people_count: int = 0
+    active_zone: str
+    confidence: float
+    mvs_peak: float
+    summary: str
+
+
+class DiagnosticsPayload(BaseModel):
+    """Bloco pesado de telemetria de engenharia (enviado apenas se diagnostics=true)."""
+
+    room_config: RoomConfig
+    nodes_detail: Dict[str, NodeDiagnosticDetail]
+    heatmap_grid: List[List[float]]
+    grid_nx: int = 20
+    grid_ny: int = 18
+    cell_size_m: float = 0.25
+    geometry_warnings: List[GeometryWarning] = Field(default_factory=list)
+    spectral_modes_count: int = 0
+    spatial_peaks_count: int = 0
+    link_decorrelation: float = 0.0
+    recent_events: List[AggregatedEvent]
+    sensitivity_multiplier: float
+    hold_time_sec: float
+    simulated_people: int = 1
+    peak_occupancy: int = 1
+    zone_dwell_seconds: Dict[str, float] = Field(default_factory=dict)
+
+
+class LiveStatePayload(BaseModel):
+    """
+    Payload WebSocket a 10 Hz (< 1 KB no modo padrão; enriquecido quando diagnostics=true).
+    Opera em Modo Único Contínuo: Monitoramento de Ocupação e Contagem de Pessoas (0, 1, 2, 3+).
+    """
+
+    timestamp: float
+    mode: Literal["simulation", "hardware"]
+    occupancy_state: OccupancyState
+    confidence: float
+    target_count: int
+    count_display: str = "0"
+    peak_occupancy: int = 0
+    topology_mode: TopologyMode
+    uncertainty_mode: UncertaintyMode = "NONE"
+    active_nodes_count: int
+    active_zone: str
+    mvs_current: float
+    threshold_on: float
+    threshold_off: float
+    intensity: float
+    calibration: CalibrationStatusPayload
+    nodes: List[NodeSummaryStatus]
+    targets: List[SpatialTarget]
+    llm_insight: LLMInsightPayload
+    diagnostics: Optional[DiagnosticsPayload] = None
+
+
+class CalibrationStartRequest(BaseModel):
+    """
+    Parâmetros para iniciar o Wizard de Calibração em 2 Etapas:
+    - stage=1: Baseline Sala Vazia (5s saída + 15s coleta) -> NBVI, mu_0, sigma_0, P95, piso de autovalores.
+    - stage=2: Referência 1 Pessoa (prep opcional + 20s caminhando) -> ganho G_l e envelope de 1 pessoa.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    stage: Literal[1, 2] = 1
+    prep_seconds: Optional[float] = Field(default=None, ge=0.0, le=30.0)
+    capture_seconds: Optional[float] = Field(default=None, ge=1.0, le=60.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def support_legacy_fields(cls, values: dict) -> dict:
+        if isinstance(values, dict):
+            if "prep_seconds" not in values and "delay_seconds" in values:
+                values["prep_seconds"] = values.pop("delay_seconds")
+            if "capture_seconds" not in values and "duration_seconds" in values:
+                values["capture_seconds"] = values.pop("duration_seconds")
+        return values
+
+
+class SimulatorControlRequest(BaseModel):
+    """
+    Controle unificado da fonte de dados (Hardware Real vs Simulador),
+    quantidade de pessoas simuladas (0..4), nós ativos, salto de AGC e parâmetros DSP.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    mode: Optional[Literal["simulation", "hardware"]] = None
+    source: Optional[Literal["simulation", "hardware"]] = None
+    simulated_people: Optional[int] = Field(default=None, ge=0, le=4)
+    active_nodes: Optional[int] = Field(default=None, ge=1, le=6)
+    inject_agc_spike: Optional[float] = Field(
+        default=None,
+        description="Fator escalar de salto de AGC a injetar (ex: 2.0, 5.0, 0.3)",
+    )
+    sensitivity_multiplier: Optional[float] = Field(default=None, ge=0.4, le=3.0)
+    hold_time_sec: Optional[float] = Field(default=None, ge=2.0, le=60.0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def unify_source_field(cls, values: dict) -> dict:
+        if isinstance(values, dict):
+            if values.get("mode") is None and values.get("source") is not None:
+                values["mode"] = values["source"]
+        return values
+
+
+class AnalysisSummarizeRequest(BaseModel):
+    """Requisição para síntese rápida, relatório executivo completo ou pergunta livre à LLM."""
+
+    mode: Literal["quick", "full_report", "ask"] = "full_report"
+    question: Optional[str] = None
+    focus_area: Optional[str] = None
+    model: Optional[str] = None
