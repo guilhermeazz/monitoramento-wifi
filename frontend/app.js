@@ -11,7 +11,7 @@
   let diagnosticsOpen = false;
   let layoutModalOpen = false;
   let initialReportLoaded = false;
-  let lastSimPeopleRequested = 1;
+  let lastSimPeopleRequested = 0;
 
   const SPARKLINE_MAX_POINTS = 300;
   const mvsSeries = [];
@@ -51,12 +51,12 @@
 
   // Referências DOM — Hero Spatial Canvas & Sparkline
   const spatialCanvas = document.getElementById('spatial-canvas');
-  const spatialCtx = spatialCanvas.getContext('2d');
+  const spatialCtx = spatialCanvas ? spatialCanvas.getContext('2d') : null;
   const topologyBadgeText = document.getElementById('topology-badge-text');
   const activeZoneLabel = document.getElementById('active-zone-label');
   const canvasIntensityVal = document.getElementById('canvas-intensity-val');
   const sparklineCanvas = document.getElementById('sparkline-canvas');
-  const sparklineCtx = sparklineCanvas.getContext('2d');
+  const sparklineCtx = sparklineCanvas ? sparklineCanvas.getContext('2d') : null;
   const metricMvsVal = document.getElementById('metric-mvs-val');
   const metricThetaVal = document.getElementById('metric-theta-val');
   const metricPeakVal = document.getElementById('metric-peak-val');
@@ -96,7 +96,7 @@
   const calModalTitle = document.getElementById('cal-modal-title');
   const calModalDesc = document.getElementById('cal-modal-desc');
   const calQualityBadge = document.getElementById('cal-quality-badge');
-  const btnStartCalStage1 = document.getElementById('btn-start-cal-stage1');
+  const btnStartCalStage1 = document.getElementById('btn-start-cal-stage1') || document.getElementById('btn-start-cal-confirm');
   const btnStartCalStage2 = document.getElementById('btn-start-cal-stage2');
   const btnCloseCalModal = document.getElementById('btn-close-cal-modal');
 
@@ -104,7 +104,7 @@
   const layoutEditorModal = document.getElementById('layout-editor-modal');
   const btnCloseLayoutEditor = document.getElementById('btn-close-layout-editor');
   const layoutEditorCanvas = document.getElementById('layout-editor-canvas');
-  const layoutEditorCtx = layoutEditorCanvas.getContext('2d');
+  const layoutEditorCtx = layoutEditorCanvas ? layoutEditorCanvas.getContext('2d') : null;
   const layoutGridInfo = document.getElementById('layout-grid-info');
   const chkSnap025 = document.getElementById('chk-snap-025');
   const layoutWarningsBox = document.getElementById('layout-warnings-box');
@@ -130,7 +130,7 @@
   const diagNodesList = document.getElementById('diag-nodes-list');
   const diagNodeSelect = document.getElementById('diag-node-select');
   const subcarrierCanvas = document.getElementById('subcarrier-canvas');
-  const subcarrierCtx = subcarrierCanvas.getContext('2d');
+  const subcarrierCtx = subcarrierCanvas ? subcarrierCanvas.getContext('2d') : null;
   const sliderSensMult = document.getElementById('slider-sens-mult');
   const lblSensMult = document.getElementById('lbl-sens-mult');
   const sliderHoldSec = document.getElementById('slider-hold-sec');
@@ -443,11 +443,9 @@
     }
   }
 
-  if (selectLlmModel) {
-    selectLlmModel.addEventListener('change', () => checkLlmStatus(selectLlmModel.value));
-  }
-  btnFullReport.addEventListener('click', () => requestLlmAnalysis('full_report'));
-  btnRefreshSummary.addEventListener('click', () => requestLlmAnalysis('full_report'));
+  selectLlmModel?.addEventListener('change', () => checkLlmStatus(selectLlmModel.value));
+  btnFullReport?.addEventListener('click', () => requestLlmAnalysis('full_report'));
+  btnRefreshSummary?.addEventListener('click', () => requestLlmAnalysis('full_report'));
   llmChips.forEach((chip) => {
     chip.addEventListener('click', () => {
       const q = chip.getAttribute('data-ask');
@@ -455,9 +453,9 @@
       requestLlmAnalysis('ask', q);
     });
   });
-  formAskLlm.addEventListener('submit', (e) => {
+  formAskLlm?.addEventListener('submit', (e) => {
     e.preventDefault();
-    const q = (inputAskLlm.value || '').trim();
+    const q = (inputAskLlm?.value || '').trim();
     if (q) requestLlmAnalysis('ask', q);
   });
 
@@ -471,74 +469,88 @@
       NOISY: 'bg-rose-400',
       UNCALIBRATED: 'bg-slate-500',
     };
-    calQualityDot.className = `w-1.5 h-1.5 rounded-full ${qColors[cal.quality] || 'bg-slate-500'}`;
+    if (calQualityDot) {
+      calQualityDot.className = `w-1.5 h-1.5 rounded-full ${qColors[cal.quality] || 'bg-slate-500'}`;
+    }
 
-    calStep1Status.textContent = cal.calibrated ? `✓ ${cal.quality}` : '5s + 15s';
-    calStep2Status.textContent = cal.stage2_calibrated ? '✓ Equalizado' : '20s andando';
-    calStep2Card.classList.toggle('opacity-75', !cal.calibrated && cal.stage !== 2);
-    calStep1Card.classList.toggle('border-sky-400/50', cal.stage === 1);
-    calStep2Card.classList.toggle('border-emerald-400/50', cal.stage === 2 || cal.stage2_calibrated);
+    if (calStep1Status) calStep1Status.textContent = cal.calibrated ? `✓ ${cal.quality}` : '5s + 15s';
+    if (calStep2Status) calStep2Status.textContent = cal.stage2_calibrated ? '✓ Equalizado' : '20s andando';
+    calStep2Card?.classList.toggle('opacity-75', !cal.calibrated && cal.stage !== 2);
+    calStep1Card?.classList.toggle('border-sky-400/50', cal.stage === 1);
+    calStep2Card?.classList.toggle('border-emerald-400/50', cal.stage === 2 || cal.stage2_calibrated);
 
     const circumference = 263.89;
     const busy = ['PREPARING', 'CAPTURING', 'PREPARING_STAGE2', 'CAPTURING_STAGE2'].includes(cal.state);
-    btnStartCalStage1.disabled = busy;
-    btnStartCalStage2.disabled = busy;
+    if (btnStartCalStage1) btnStartCalStage1.disabled = busy;
+    if (btnStartCalStage2) btnStartCalStage2.disabled = busy;
 
     if (cal.state === 'PREPARING') {
-      calOverlay.classList.add('open');
-      calRingProgress.style.stroke = '#F59E0B';
-      calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
-      calRingLabel.textContent = `${(cal.remaining_sec || 0).toFixed(1)}s`;
-      calModalTitle.textContent = 'Etapa 1: Esvazie a Sala';
-      calModalDesc.textContent = 'Saia da área monitorada. A captura do baseline vazio (15s) iniciará automaticamente.';
-      calQualityBadge.textContent = 'Aguardando saída da sala...';
+      calOverlay?.classList.add('open');
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#F59E0B';
+        calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
+      }
+      if (calRingLabel) calRingLabel.textContent = `${(cal.remaining_sec || 0).toFixed(1)}s`;
+      if (calModalTitle) calModalTitle.textContent = 'Etapa 1: Esvazie a Sala';
+      if (calModalDesc) calModalDesc.textContent = 'Saia da área monitorada. A captura do baseline vazio (15s) iniciará automaticamente.';
+      if (calQualityBadge) calQualityBadge.textContent = 'Aguardando saída da sala...';
     } else if (cal.state === 'CAPTURING') {
-      calOverlay.classList.add('open');
-      calRingProgress.style.stroke = '#38BDF8';
-      calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
-      calRingLabel.textContent = `${Math.round((cal.progress || 0) * 100)}%`;
-      calModalTitle.textContent = 'Etapa 1: Coletando Baseline de Sala Vazia (15s)';
-      calModalDesc.textContent = 'Calculando NBVI (12 subportadoras), μ₀, σ₀, P95 por link e piso de autovalores (λ₁,₀, λ₂,₀).';
-      calQualityBadge.textContent = `Restante: ${(cal.remaining_sec || 0).toFixed(1)}s`;
+      calOverlay?.classList.add('open');
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#38BDF8';
+        calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
+      }
+      if (calRingLabel) calRingLabel.textContent = `${Math.round((cal.progress || 0) * 100)}%`;
+      if (calModalTitle) calModalTitle.textContent = 'Etapa 1: Coletando Baseline de Sala Vazia (15s)';
+      if (calModalDesc) calModalDesc.textContent = 'Calculando NBVI (12 subportadoras), μ₀, σ₀, P95 por link e piso de autovalores (λ₁,₀, λ₂,₀).';
+      if (calQualityBadge) calQualityBadge.textContent = `Restante: ${(cal.remaining_sec || 0).toFixed(1)}s`;
     } else if (cal.state === 'STAGE1_DONE') {
-      calOverlay.classList.add('open');
-      calRingProgress.style.stroke = '#10B981';
-      calRingProgress.style.strokeDashoffset = '0';
-      calRingLabel.textContent = 'Etapa 1 ✓';
-      calModalTitle.textContent = 'Etapa 1 Concluída! Avance para a Etapa 2';
-      calModalDesc.textContent = cal.noise_diagnosis || 'Agora clique em "2. Referência 1 Pessoa (20s)" e caminhe sozinho pela sala.';
-      calQualityBadge.textContent = `Qualidade do Ruído: ${cal.quality}`;
+      calOverlay?.classList.add('open');
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#10B981';
+        calRingProgress.style.strokeDashoffset = '0';
+      }
+      if (calRingLabel) calRingLabel.textContent = 'Etapa 1 ✓';
+      if (calModalTitle) calModalTitle.textContent = 'Etapa 1 Concluída! Avance para a Etapa 2';
+      if (calModalDesc) calModalDesc.textContent = cal.noise_diagnosis || 'Agora clique em "2. Referência 1 Pessoa (20s)" e caminhe sozinho pela sala.';
+      if (calQualityBadge) calQualityBadge.textContent = `Qualidade do Ruído: ${cal.quality}`;
     } else if (cal.state === 'PREPARING_STAGE2') {
-      calOverlay.classList.add('open');
-      calRingProgress.style.stroke = '#F59E0B';
-      calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
-      calRingLabel.textContent = `${(cal.remaining_sec || 0).toFixed(1)}s`;
-      calModalTitle.textContent = 'Etapa 2: Posicione 1 Pessoa na Sala';
-      calModalDesc.textContent = 'Prepare-se para caminhar normalmente cobrindo os setores da sala durante 20 segundos.';
-      calQualityBadge.textContent = 'Iniciando captura de referência...';
+      calOverlay?.classList.add('open');
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#F59E0B';
+        calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
+      }
+      if (calRingLabel) calRingLabel.textContent = `${(cal.remaining_sec || 0).toFixed(1)}s`;
+      if (calModalTitle) calModalTitle.textContent = 'Etapa 2: Posicione 1 Pessoa na Sala';
+      if (calModalDesc) calModalDesc.textContent = 'Prepare-se para caminhar normalmente cobrindo os setores da sala durante 20 segundos.';
+      if (calQualityBadge) calQualityBadge.textContent = 'Iniciando captura de referência...';
     } else if (cal.state === 'CAPTURING_STAGE2') {
-      calOverlay.classList.add('open');
-      calRingProgress.style.stroke = '#10B981';
-      calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
-      calRingLabel.textContent = `${Math.round((cal.progress || 0) * 100)}%`;
-      calModalTitle.textContent = 'Etapa 2: Caminhe pela Sala (1 Pessoa • 20s)';
-      calModalDesc.textContent = 'Medindo ganho espacial G_l por link e envelope espectral (λ₁,ref, λ₂,ref, E₁,ref) para destravar 2+ pessoas.';
-      calQualityBadge.textContent = `Caminhada restante: ${(cal.remaining_sec || 0).toFixed(1)}s`;
+      calOverlay?.classList.add('open');
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#10B981';
+        calRingProgress.style.strokeDashoffset = `${circumference * (1 - (cal.progress || 0))}`;
+      }
+      if (calRingLabel) calRingLabel.textContent = `${Math.round((cal.progress || 0) * 100)}%`;
+      if (calModalTitle) calModalTitle.textContent = 'Etapa 2: Caminhe pela Sala (1 Pessoa • 20s)';
+      if (calModalDesc) calModalDesc.textContent = 'Medindo ganho espacial G_l por link e envelope espectral (λ₁,ref, λ₂,ref, E₁,ref) para destravar 2+ pessoas.';
+      if (calQualityBadge) calQualityBadge.textContent = `Caminhada restante: ${(cal.remaining_sec || 0).toFixed(1)}s`;
     } else if (cal.state === 'COMPLETED') {
-      calRingProgress.style.stroke = '#10B981';
-      calRingProgress.style.strokeDashoffset = '0';
-      calRingLabel.textContent = '100%';
-      calModalTitle.textContent = 'Calibração de 2 Etapas Finalizada!';
-      calModalDesc.textContent = cal.noise_diagnosis || 'Ganhos G_l e régua espectral salvos em calibration_profile.json.';
-      calQualityBadge.textContent = `Qualidade: ${cal.quality} • Pronto para 0, 1, 2 e 3+ pessoas`;
-    } else if (cal.calibrated) {
+      if (calRingProgress) {
+        calRingProgress.style.stroke = '#10B981';
+        calRingProgress.style.strokeDashoffset = '0';
+      }
+      if (calRingLabel) calRingLabel.textContent = '100%';
+      if (calModalTitle) calModalTitle.textContent = 'Calibração de 2 Etapas Finalizada!';
+      if (calModalDesc) calModalDesc.textContent = cal.noise_diagnosis || 'Ganhos G_l e régua espectral salvos em calibration_profile.json.';
+      if (calQualityBadge) calQualityBadge.textContent = `Qualidade: ${cal.quality} • Pronto para 0, 1, 2 e 3+ pessoas`;
+    } else if (cal.calibrated && calQualityBadge) {
       calQualityBadge.textContent = cal.noise_diagnosis || `Calibrado (${cal.quality})`;
     }
   }
 
-  btnOpenCalibrate.addEventListener('click', () => calOverlay.classList.add('open'));
-  btnCloseCalModal.addEventListener('click', async () => {
-    calOverlay.classList.remove('open');
+  btnOpenCalibrate?.addEventListener('click', () => calOverlay?.classList.add('open'));
+  btnCloseCalModal?.addEventListener('click', async () => {
+    calOverlay?.classList.remove('open');
     if (liveState && liveState.calibration && liveState.calibration.state === 'STAGE1_DONE') {
       try {
         await fetch('/api/calibration/cancel', { method: 'POST' });
@@ -546,7 +558,7 @@
     }
   });
 
-  btnStartCalStage1.addEventListener('click', async () => {
+  btnStartCalStage1?.addEventListener('click', async () => {
     try {
       await fetch('/api/calibration/start', {
         method: 'POST',
@@ -558,7 +570,7 @@
     }
   });
 
-  btnStartCalStage2.addEventListener('click', async () => {
+  btnStartCalStage2?.addEventListener('click', async () => {
     try {
       await fetch('/api/calibration/start', {
         method: 'POST',
@@ -1108,8 +1120,8 @@
     syncSideInputsNumbersOnly();
   }
 
-  inpRoomW.addEventListener('input', onSideInputEdited);
-  inpRoomL.addEventListener('input', onSideInputEdited);
+  inpRoomW?.addEventListener('input', onSideInputEdited);
+  inpRoomL?.addEventListener('input', onSideInputEdited);
 
   function renderLayoutEditorCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -1284,13 +1296,13 @@
     return null;
   }
 
-  layoutEditorCanvas.addEventListener('mousedown', (e) => {
+  layoutEditorCanvas?.addEventListener('mousedown', (e) => {
     const rect = layoutEditorCanvas.getBoundingClientRect();
     editorDraggingId = findEditorNodeAt(e.clientX - rect.left, e.clientY - rect.top);
   });
 
   window.addEventListener('mousemove', (e) => {
-    if (!editorDraggingId || !layoutModalOpen) return;
+    if (!editorDraggingId || !layoutModalOpen || !layoutEditorCanvas) return;
     const rect = layoutEditorCanvas.getBoundingClientRect();
     const wM = draftGeometry.width_m || 5.0;
     const lM = draftGeometry.length_m || 4.5;
@@ -1324,22 +1336,22 @@
   function openLayoutModal() {
     draftGeometry = JSON.parse(JSON.stringify(roomGeometry));
     layoutModalOpen = true;
-    layoutEditorModal.classList.add('open');
+    layoutEditorModal?.classList.add('open');
     buildLayoutSideInputs();
   }
 
   function closeLayoutModal() {
     layoutModalOpen = false;
     editorDraggingId = null;
-    layoutEditorModal.classList.remove('open');
+    layoutEditorModal?.classList.remove('open');
   }
 
-  btnOpenLayoutEditor.addEventListener('click', openLayoutModal);
-  btnDrawerOpenLayout.addEventListener('click', () => {
+  btnOpenLayoutEditor?.addEventListener('click', openLayoutModal);
+  btnDrawerOpenLayout?.addEventListener('click', () => {
     setDiagnosticsDrawer(false);
     openLayoutModal();
   });
-  btnCloseLayoutEditor.addEventListener('click', closeLayoutModal);
+  btnCloseLayoutEditor?.addEventListener('click', closeLayoutModal);
 
   async function loadRoomGeometry() {
     try {
@@ -1355,7 +1367,7 @@
     }
   }
 
-  btnSaveGeometry.addEventListener('click', async () => {
+  btnSaveGeometry?.addEventListener('click', async () => {
     onSideInputEdited();
     try {
       const res = await fetch('/api/config/layout', {
@@ -1378,7 +1390,7 @@
     }
   });
 
-  btnResetGeometry.addEventListener('click', async () => {
+  btnResetGeometry?.addEventListener('click', async () => {
     try {
       const res = await fetch('/api/config/room/reset', { method: 'POST' });
       if (res.ok) {
@@ -1397,19 +1409,19 @@
   function setDiagnosticsDrawer(open) {
     diagnosticsOpen = open;
     if (open) {
-      drawerBackdrop.classList.add('open');
-      diagnosticsDrawer.classList.add('open');
+      drawerBackdrop?.classList.add('open');
+      diagnosticsDrawer?.classList.add('open');
       if (ws && ws.readyState === WebSocket.OPEN) ws.send('diagnostics:on');
     } else {
-      drawerBackdrop.classList.remove('open');
-      diagnosticsDrawer.classList.remove('open');
+      drawerBackdrop?.classList.remove('open');
+      diagnosticsDrawer?.classList.remove('open');
       if (ws && ws.readyState === WebSocket.OPEN) ws.send('diagnostics:off');
     }
   }
 
-  btnOpenDiagnostics.addEventListener('click', () => setDiagnosticsDrawer(true));
-  btnCloseDiagnostics.addEventListener('click', () => setDiagnosticsDrawer(false));
-  drawerBackdrop.addEventListener('click', () => setDiagnosticsDrawer(false));
+  btnOpenDiagnostics?.addEventListener('click', () => setDiagnosticsDrawer(true));
+  btnCloseDiagnostics?.addEventListener('click', () => setDiagnosticsDrawer(false));
+  drawerBackdrop?.addEventListener('click', () => setDiagnosticsDrawer(false));
 
   function renderDiagnosticsDrawer(state) {
     if (state.mode === 'simulation') {
@@ -1528,8 +1540,8 @@
     });
   });
 
-  btnSourceSim.addEventListener('click', () => sendControlCommand({ mode: 'simulation' }));
-  btnSourceHw.addEventListener('click', () => sendControlCommand({ mode: 'hardware' }));
+  btnSourceSim?.addEventListener('click', () => sendControlCommand({ mode: 'simulation' }));
+  btnSourceHw?.addEventListener('click', () => sendControlCommand({ mode: 'hardware' }));
 
   nodeCntBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1538,19 +1550,19 @@
     });
   });
 
-  btnInjectAgc.addEventListener('click', () => sendControlCommand({ inject_agc_spike: 4.5 }));
+  btnInjectAgc?.addEventListener('click', () => sendControlCommand({ inject_agc_spike: 4.5 }));
 
-  sliderSensMult.addEventListener('input', () => {
-    lblSensMult.textContent = `${parseFloat(sliderSensMult.value).toFixed(2)}x`;
+  sliderSensMult?.addEventListener('input', () => {
+    if (lblSensMult) lblSensMult.textContent = `${parseFloat(sliderSensMult.value).toFixed(2)}x`;
   });
-  sliderSensMult.addEventListener('change', () => {
+  sliderSensMult?.addEventListener('change', () => {
     sendControlCommand({ sensitivity_multiplier: parseFloat(sliderSensMult.value) });
   });
 
-  sliderHoldSec.addEventListener('input', () => {
-    lblHoldSec.textContent = `${parseFloat(sliderHoldSec.value).toFixed(1)} s`;
+  sliderHoldSec?.addEventListener('input', () => {
+    if (lblHoldSec) lblHoldSec.textContent = `${parseFloat(sliderHoldSec.value).toFixed(1)} s`;
   });
-  sliderHoldSec.addEventListener('change', () => {
+  sliderHoldSec?.addEventListener('change', () => {
     sendControlCommand({ hold_time_sec: parseFloat(sliderHoldSec.value) });
   });
 

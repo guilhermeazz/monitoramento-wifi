@@ -471,8 +471,10 @@ class DSPEngine:
         span_sec = float(ts_arr[-1] - ts_arr[0]) if ts_arr.size >= 2 else 0.0
         rt.pps = round((ts_arr.size - 1) / span_sec, 1) if span_sec > 0.05 else float(ts_arr.size)
 
-        if not prof.calibrated and len(buf) >= 25 and self.cal_state == "IDLE":
-            self._auto_bootstrap_profile(node_id, list(buf)[:25])
+        if not prof.calibrated and self.cal_state == "IDLE":
+            buf_span = (buf[-1].timestamp - buf[0].timestamp) if len(buf) >= 2 else 0.0
+            if len(buf) >= 35 or (len(buf) >= 12 and buf_span >= 2.5):
+                self._auto_bootstrap_profile(node_id, list(buf))
 
         amp_norm_mat = np.stack([s.amp_norm for s in recent_samples], axis=0)
         sub_12 = amp_norm_mat[:, prof.nbvi_indices]
@@ -537,8 +539,6 @@ class DSPEngine:
         rms_unit = float(np.sqrt(max(1e-9, theta_on)))
         raw_linear_energy = max(0.0, (rms_cur - rms_floor) / rms_unit)
 
-        static_alive = self._evaluate_static_branch(amp_norm_mat, prof)
-
         if mvs_val > theta_on:
             rt.consecutive_motion_ticks += 1
             if rt.consecutive_motion_ticks >= settings.DEBOUNCE_CONSECUTIVE_TICKS:
@@ -551,11 +551,11 @@ class DSPEngine:
                     rt.state = "PRESENCE_STATIC"
                     rt.hold_until = now + self.hold_time_sec
             elif rt.state == "PRESENCE_STATIC":
-                if static_alive:
-                    rt.hold_until = max(rt.hold_until, now + min(4.0, self.hold_time_sec * 0.5))
+                # Decaimento determinístico (TTL): expira para EMPTY ao fim do hold_time_sec sem loop infinito
                 if now >= rt.hold_until:
                     rt.state = "EMPTY"
                     rt.intensity = 0.0
+                    rt.calibrated_energy = 0.0
 
         if rt.state == "EMPTY":
             rt.intensity = float(np.clip(mvs_val / theta_on, 0.0, 0.95)) if mvs_val > 0 else 0.0
@@ -814,13 +814,17 @@ class DSPEngine:
         eig2_empty: List[float] = []
         eig3_empty: List[float] = []
 
-        step_stride = max(1, len(samples) // 60)
+        step_stride = max(1, len(samples) // 80)
         for i in range(2, ts_arr.size, step_stride):
             t_cur = float(ts_arr[i])
-            mask_mvs = ts_arr[: i + 1] >= (t_cur - settings.MVS_WINDOW_SEC)
-            win = turb_filt[: i + 1][mask_mvs]
-            if win.size >= 2:
-                mvs_empty_values.append(float(np.var(win)))
+            mvs_i = self.compute_mvs_by_timestamp(
+                timestamps=ts_arr[: i + 1],
+                turbulence_filtered=turb_filt[: i + 1],
+                now_ts=t_cur,
+                window_sec=settings.MVS_WINDOW_SEC,
+            )
+            if mvs_i > 0.0:
+                mvs_empty_values.append(mvs_i)
 
             mask_cov = ts_arr[: i + 1] >= (t_cur - settings.COV_WINDOW_SEC)
             win_sub = sub_12[: i + 1][mask_cov]
@@ -836,7 +840,9 @@ class DSPEngine:
         mu_0 = max(1e-8, float(np.mean(mvs_empty_values)))
         sigma_0 = max(5e-8, float(np.std(mvs_empty_values)))
         p95_mvs = max(1.5e-7, float(np.percentile(mvs_empty_values, 95)))
-        theta_on = max(1.25 * p95_mvs, mu_0 + 3.2 * sigma_0)
+        max_mvs = max(p95_mvs, float(np.max(mvs_empty_values)))
+        # Noise Gate rigoroso: acima do pico máximo observado no vazio (1.35x max) e Z-score >= 4.5 sigma
+        theta_on = max(1.35 * max_mvs, 1.50 * p95_mvs, mu_0 + 4.5 * sigma_0)
         theta_off = 0.85 * theta_on
 
         if eig1_empty:
@@ -948,11 +954,14 @@ class DSPEngine:
             stride = max(1, len(samples) // 80)
             for i in range(4, ts_arr.size, stride):
                 t_cur = float(ts_arr[i])
-                mask_mvs = ts_arr[: i + 1] >= (t_cur - settings.MVS_WINDOW_SEC)
-                win_t = turb_filt[: i + 1][mask_mvs]
-                if win_t.size >= 2:
-                    mvs_v = float(np.var(win_t))
-                    e_lin = max(0.0, (math.sqrt(max(0.0, mvs_v)) - rms_floor) / rms_unit) if mvs_v > 0 else 0.0
+                mvs_v = self.compute_mvs_by_timestamp(
+                    timestamps=ts_arr[: i + 1],
+                    turbulence_filtered=turb_filt[: i + 1],
+                    now_ts=t_cur,
+                    window_sec=settings.MVS_WINDOW_SEC,
+                )
+                if mvs_v > 0.0:
+                    e_lin = max(0.0, (math.sqrt(max(0.0, mvs_v)) - rms_floor) / rms_unit)
                     if e_lin > 0.25:
                         lin_energies.append(e_lin)
 
@@ -994,6 +1003,8 @@ class DSPEngine:
 
     def _auto_bootstrap_profile(self, node_id: str, samples: List[CSIRingSample]) -> None:
         prof = self.calibrate_node_from_samples(node_id, samples)
+        prof.threshold_on_base *= 1.35
+        prof.threshold_off_base = 0.85 * prof.threshold_on_base
         prof.calibrated = True
 
     def _finalize_stage1_calibration(self, now: float) -> None:
@@ -1122,7 +1133,9 @@ class DSPEngine:
                 if mean_arr.size != self.num_subcarriers:
                     continue
                 nbvi_idx = [int(i) for i in nd.get("nbvi_indices", [])]
-                # Valida que não há subportadoras mortas legadas no perfil salvo
+                # Descarta perfis sub-amostrados (< 3 Hz / < 25 pacotes) ou com subportadoras nulas
+                if float(nd.get("measured_pps", 0.0)) < 3.0 or int(nd.get("sample_count", 0)) < 25:
+                    continue
                 if any(mean_arr[i] < 1e-3 for i in nbvi_idx if 0 <= i < mean_arr.size):
                     continue
                 self.profiles[nid] = NodeCalibrationProfile(

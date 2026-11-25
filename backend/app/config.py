@@ -62,7 +62,7 @@ class Settings:
     # Fonte de Dados Inicial e Timeout de Sensores (Modo Operacional Único Contínuo)
     INITIAL_MODE: str = os.getenv("INITIAL_MODE", "simulation")  # "simulation" | "hardware"
     INITIAL_SIM_NODES: int = int(os.getenv("INITIAL_SIM_NODES", "3"))
-    INITIAL_SIM_PEOPLE: int = int(os.getenv("INITIAL_SIM_PEOPLE", "1"))
+    INITIAL_SIM_PEOPLE: int = int(os.getenv("INITIAL_SIM_PEOPLE", "0"))
     NODE_ONLINE_TIMEOUT_SEC: float = 3.0
     GRID_RESOLUTION: int = 20
 

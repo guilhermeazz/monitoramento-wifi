@@ -587,12 +587,35 @@ async def websocket_live_endpoint(
         controller.ws_clients.pop(websocket, None)
 
 
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/")
 async def serve_index():
     index_path = FRONTEND_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers=NO_CACHE_HEADERS)
     return JSONResponse({"message": "Frontend index.html não encontrado."})
+
+
+@app.get("/app.js")
+async def serve_app_js():
+    js_path = FRONTEND_DIR / "app.js"
+    if js_path.exists():
+        return FileResponse(js_path, media_type="application/javascript", headers=NO_CACHE_HEADERS)
+    return JSONResponse({"message": "app.js não encontrado."}, status_code=404)
+
+
+@app.get("/styles.css")
+async def serve_styles_css():
+    css_path = FRONTEND_DIR / "styles.css"
+    if css_path.exists():
+        return FileResponse(css_path, media_type="text/css", headers=NO_CACHE_HEADERS)
+    return JSONResponse({"message": "styles.css não encontrado."}, status_code=404)
 
 
 FRONTEND_DIR.mkdir(parents=True, exist_ok=True)

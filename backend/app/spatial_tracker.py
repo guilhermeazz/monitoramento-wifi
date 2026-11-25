@@ -788,22 +788,23 @@ class SpatialTracker:
         """
         ref_e = max(1.2, float(ref_energy_1p))
         total_norm_e = float(np.sum(equalized_energies)) / ref_e
-        direct_links = int(np.sum(equalized_energies >= 0.72 * ref_e))
-        moderate_links = int(np.sum(equalized_energies >= 0.40 * ref_e))
+        direct_links = int(np.sum(equalized_energies >= 0.68 * ref_e))
+        moderate_links = int(np.sum(equalized_energies >= 0.38 * ref_e))
 
         # 1. Proteção rigorosa contra superestimação de 1 pessoa:
-        # Se há apenas 1 pico espacial no grid RTI e no máximo 1 link diretamente ocupado (ou energia < 2.45x ref), é 1 pessoa
+        # Se há apenas 1 pico espacial no grid RTI e no máximo 1 link diretamente ocupado (ou energia contida), é 1 pessoa
         if spatial_peaks_n <= 1 and direct_links <= 1 and spectral_modes <= 2:
             return 1
-        if spatial_peaks_n <= 1 and total_norm_e < 2.45 and spectral_modes <= 2:
-            return 1
+        if spatial_peaks_n <= 1 and total_norm_e < 2.25 and direct_links <= 2 and spectral_modes <= 2:
+            if link_decorr < 0.72:
+                return 1
 
         n_spat = max(1, min(4, int(spatial_peaks_n)))
         n_spec = max(1, min(3, int(spectral_modes)))
 
         if active_nodes_count >= 3 and (
-            (direct_links >= 3 and link_decorr >= 0.48 and total_norm_e >= 2.80)
-            or (moderate_links >= 3 and link_decorr >= 0.56 and total_norm_e >= 3.35)
+            (direct_links >= 3 and link_decorr >= 0.48 and total_norm_e >= 2.65)
+            or (moderate_links >= 3 and link_decorr >= 0.56 and total_norm_e >= 3.15)
         ):
             n_energy = 4 if (total_norm_e >= 4.45 and n_spat >= 3) else 3
         elif (
@@ -819,7 +820,7 @@ class SpatialTracker:
         consensus = 0.36 * n_spat + 0.30 * n_spec + 0.34 * n_energy
 
         votes_for_3 = int(n_spat >= 3) + int(n_spec >= 3) + int(n_energy >= 3)
-        if votes_for_3 >= 2 or (n_energy >= 3 and total_norm_e >= 3.15 and link_decorr >= 0.55):
+        if votes_for_3 >= 2 or (n_energy >= 3 and total_norm_e >= 2.90 and link_decorr >= 0.52):
             consensus = max(consensus, 2.62)
         elif n_spec >= 2 and n_energy >= 2:
             consensus = max(consensus, 1.72)
@@ -850,7 +851,6 @@ class SpatialTracker:
 
         med = int(round(float(np.median(vals))))
         if med != self._committed_count:
-            # Exige maioria consistente na janela recente para transicionar entre 1 <-> 2 <-> 3+
             recent_1s = [c for ts, c in self._count_history if ts >= (now - 1.1)]
             if len(recent_1s) >= 4:
                 agree_ratio = sum(1 for c in recent_1s if c == med) / float(len(recent_1s))
